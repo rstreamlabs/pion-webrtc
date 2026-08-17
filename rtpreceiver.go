@@ -27,7 +27,7 @@ import (
 type trackStreams struct {
 	track *TrackRemote
 
-	streamInfo, repairStreamInfo *interceptor.StreamInfo
+	streamInfo, repairStreamInfo, fecStreamInfo *interceptor.StreamInfo
 
 	rtpReadStream  *srtp.ReadStreamSRTP
 	rtpInterceptor interceptor.RTPReader
@@ -43,6 +43,11 @@ type trackStreams struct {
 
 	repairRtcpReadStream  *srtp.ReadStreamSRTCP
 	repairRtcpInterceptor interceptor.RTCPReader
+
+	fecReadStream      *srtp.ReadStreamSRTP
+	fecInterceptor     interceptor.RTPReader
+	fecRtcpReadStream  *srtp.ReadStreamSRTCP
+	fecRtcpInterceptor interceptor.RTCPReader
 }
 
 type rtxPacketWithAttributes struct {
@@ -188,6 +193,7 @@ func (r *RTPReceiver) configureReceive(parameters RTPReceiveParameters) {
 				r,
 			),
 		}
+		t.track.fecSsrc = parameters.Encodings[i].FEC.SSRC
 
 		r.tracks = append(r.tracks, t)
 	}
@@ -278,9 +284,44 @@ func (r *RTPReceiver) startReceive(parameters RTPReceiveParameters) error { //no
 				return err
 			}
 		}
+		if fecSsrc := parameters.Encodings[i].FEC.SSRC; fecSsrc != 0 {
+			if err = r.startReceiveFEC(streams, fecSsrc, globalParams); err != nil {
+				return err
+			}
+		}
 	}
 
 	close(r.received)
+
+	return nil
+}
+
+func (r *RTPReceiver) startReceiveFEC(streams *trackStreams, fecSsrc SSRC, parameters RTPParameters) error {
+	fecCodec := RTPCodecCapability{MimeType: MimeTypeFlexFEC03, ClockRate: 90000}
+	fecPayloadType := PayloadType(0)
+	for _, codecParameters := range parameters.Codecs {
+		if codecParameters.MimeType == MimeTypeFlexFEC03 {
+			fecCodec = codecParameters.RTPCodecCapability
+			fecPayloadType = codecParameters.PayloadType
+
+			break
+		}
+	}
+	if fecPayloadType == 0 {
+		return fmt.Errorf("%w: %d", errRTPReceiverFECCodecNotFound, fecSsrc)
+	}
+	streamInfo := createStreamInfo(
+		"", fecSsrc, 0, 0, fecPayloadType, 0, 0, fecCodec, parameters.HeaderExtensions,
+	)
+	result, err := r.transport.streamsForSSRC(fecSsrc, *streamInfo)
+	if err != nil {
+		return err
+	}
+	streams.fecStreamInfo = streamInfo
+	streams.fecReadStream = result.rtpReadStream
+	streams.fecInterceptor = result.rtpInterceptor
+	streams.fecRtcpReadStream = result.rtcpReadStream
+	streams.fecRtcpInterceptor = result.rtcpInterceptor
 
 	return nil
 }
@@ -361,6 +402,25 @@ func (r *RTPReceiver) ReadSimulcastRTCP(rid string) ([]rtcp.Packet, interceptor.
 	return pkts, attributes, err
 }
 
+// ReadFEC reads a packet from the FlexFEC repair stream associated with a single track.
+func (r *RTPReceiver) ReadFEC(b []byte) (int, interceptor.Attributes, error) {
+	select {
+	case <-r.received:
+	case <-r.closedChan:
+		return 0, nil, io.EOF
+	}
+	r.mu.RLock()
+	if len(r.tracks) != 1 || r.tracks[0].fecInterceptor == nil {
+		r.mu.RUnlock()
+
+		return 0, nil, errRTPReceiverFECStreamNotFound
+	}
+	reader := r.tracks[0].fecInterceptor
+	r.mu.RUnlock()
+
+	return reader.Read(b, nil)
+}
+
 func (r *RTPReceiver) haveReceived() bool {
 	select {
 	case <-r.received:
@@ -388,35 +448,11 @@ func (r *RTPReceiver) Stop() error { //nolint:cyclop
 
 	select {
 	case <-r.received:
+		errs := []error{}
 		for i := range r.tracks {
-			errs := []error{}
-
-			if r.tracks[i].rtcpReadStream != nil {
-				errs = append(errs, r.tracks[i].rtcpReadStream.Close())
-			}
-
-			if r.tracks[i].rtpReadStream != nil {
-				errs = append(errs, r.tracks[i].rtpReadStream.Close())
-			}
-
-			if r.tracks[i].repairReadStream != nil {
-				errs = append(errs, r.tracks[i].repairReadStream.Close())
-			}
-
-			if r.tracks[i].repairRtcpReadStream != nil {
-				errs = append(errs, r.tracks[i].repairRtcpReadStream.Close())
-			}
-
-			if r.tracks[i].streamInfo != nil {
-				r.api.interceptor.UnbindRemoteStream(r.tracks[i].streamInfo)
-			}
-
-			if r.tracks[i].repairStreamInfo != nil {
-				r.api.interceptor.UnbindRemoteStream(r.tracks[i].repairStreamInfo)
-			}
-
-			err = util.FlattenErrs(errs)
+			errs = append(errs, r.stopTrackStreams(&r.tracks[i]))
 		}
+		err = util.FlattenErrs(errs)
 	default:
 	}
 
@@ -424,6 +460,39 @@ func (r *RTPReceiver) Stop() error { //nolint:cyclop
 	r.closed.Store(true)
 
 	return err
+}
+
+func (r *RTPReceiver) stopTrackStreams(streams *trackStreams) error {
+	errs := []error{}
+	if streams.rtcpReadStream != nil {
+		errs = append(errs, streams.rtcpReadStream.Close())
+	}
+	if streams.rtpReadStream != nil {
+		errs = append(errs, streams.rtpReadStream.Close())
+	}
+	if streams.repairReadStream != nil {
+		errs = append(errs, streams.repairReadStream.Close())
+	}
+	if streams.repairRtcpReadStream != nil {
+		errs = append(errs, streams.repairRtcpReadStream.Close())
+	}
+	if streams.fecReadStream != nil {
+		errs = append(errs, streams.fecReadStream.Close())
+	}
+	if streams.fecRtcpReadStream != nil {
+		errs = append(errs, streams.fecRtcpReadStream.Close())
+	}
+	if streams.streamInfo != nil {
+		r.api.interceptor.UnbindRemoteStream(streams.streamInfo)
+	}
+	if streams.repairStreamInfo != nil {
+		r.api.interceptor.UnbindRemoteStream(streams.repairStreamInfo)
+	}
+	if streams.fecStreamInfo != nil {
+		r.api.interceptor.UnbindRemoteStream(streams.fecStreamInfo)
+	}
+
+	return util.FlattenErrs(errs)
 }
 
 func (r *RTPReceiver) collectStats(collector *statsReportCollector, statsGetter stats.Getter) {
