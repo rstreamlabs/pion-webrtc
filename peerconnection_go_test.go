@@ -913,6 +913,39 @@ func TestMulticastDNSHostNameConnection(t *testing.T) {
 	}
 }
 
+// queueTrickleUntilRemoteDescription preserves signaling order when gathering
+// emits a new-generation candidate before the matching SDP has been applied.
+// Later candidates are still forwarded immediately, preserving trickle ICE.
+func queueTrickleUntilRemoteDescription(t *testing.T, local, remote *PeerConnection) func() {
+	t.Helper()
+	var mu sync.Mutex
+	var pending []ICECandidateInit
+	ready := false
+	local.OnICECandidate(func(candidate *ICECandidate) {
+		if candidate == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !ready {
+			pending = append(pending, candidate.ToJSON())
+
+			return
+		}
+		assert.NoError(t, remote.AddICECandidate(candidate.ToJSON()))
+	})
+
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, candidate := range pending {
+			assert.NoError(t, remote.AddICECandidate(candidate))
+		}
+		pending = nil
+		ready = true
+	}
+}
+
 func TestICERestart(t *testing.T) {
 	extractCandidates := func(sdp string) (candidates []string) {
 		sc := bufio.NewScanner(strings.NewReader(sdp))
@@ -957,17 +990,8 @@ func TestICERestart(t *testing.T) {
 	firstAnswerCandidates := extractCandidates(answerPC.LocalDescription().SDP)
 
 	// Use Trickle ICE for ICE Restart
-	offerPC.OnICECandidate(func(c *ICECandidate) {
-		if c != nil {
-			assert.NoError(t, answerPC.AddICECandidate(c.ToJSON()))
-		}
-	})
-
-	answerPC.OnICECandidate(func(c *ICECandidate) {
-		if c != nil {
-			assert.NoError(t, offerPC.AddICECandidate(c.ToJSON()))
-		}
-	})
+	flushOfferCandidates := queueTrickleUntilRemoteDescription(t, offerPC, answerPC)
+	flushAnswerCandidates := queueTrickleUntilRemoteDescription(t, answerPC, offerPC)
 
 	// Re-signal with ICE Restart, block until ICEConnectionStateConnected
 	connectedWaitGroup.Add(2)
@@ -976,12 +1000,14 @@ func TestICERestart(t *testing.T) {
 
 	assert.NoError(t, offerPC.SetLocalDescription(offer))
 	assert.NoError(t, answerPC.SetRemoteDescription(offer))
+	flushOfferCandidates()
 
 	answer, err := answerPC.CreateAnswer(nil)
 	assert.NoError(t, err)
 
 	assert.NoError(t, answerPC.SetLocalDescription(answer))
 	assert.NoError(t, offerPC.SetRemoteDescription(answer))
+	flushAnswerCandidates()
 
 	// Block until we have connected again
 	connectedWaitGroup.Wait()
