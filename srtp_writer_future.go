@@ -19,8 +19,10 @@ import (
 // the SRTP Session is available.
 type srtpWriterFuture struct {
 	ssrc           SSRC
+	ssrcRTX        SSRC
+	ssrcFEC        SSRC
 	rtpSender      *RTPSender
-	rtcpReadStream atomic.Value // *srtp.ReadStreamSRTCP
+	rtcpReadStream atomic.Value // rtcpReadCloser
 	rtpWriteStream atomic.Value // *srtp.WriteStreamSRTP
 	mu             sync.Mutex
 	closed         bool
@@ -49,23 +51,24 @@ func (s *srtpWriterFuture) init(returnWhenNoSRTP bool) error { //nolint:cyclop
 	if s.closed {
 		return io.ErrClosedPipe
 	}
-
-	srtcpSession, err := s.rtpSender.transport.getSRTCPSession()
-	if err != nil {
-		return err
+	if s.rtpWriteStream.Load() != nil {
+		return nil
 	}
 
-	rtcpReadStream, err := srtcpSession.OpenReadStream(uint32(s.ssrc))
-	if err != nil {
-		return err
-	}
-
+	// Obtain both sessions before opening any reader that requires cleanup.
 	srtpSession, err := s.rtpSender.transport.getSRTPSession()
 	if err != nil {
 		return err
 	}
-
 	rtpWriteStream, err := srtpSession.OpenWriteStream()
+	if err != nil {
+		return err
+	}
+	srtcpSession, err := s.rtpSender.transport.getSRTCPSession()
+	if err != nil {
+		return err
+	}
+	rtcpReadStream, err := openSenderRTCPReader(srtcpSession, s.ssrc, s.ssrcRTX, s.ssrcFEC)
 	if err != nil {
 		return err
 	}
@@ -85,7 +88,7 @@ func (s *srtpWriterFuture) Close() error {
 	}
 	s.closed = true
 
-	if value, ok := s.rtcpReadStream.Load().(*srtp.ReadStreamSRTCP); ok {
+	if value, ok := s.rtcpReadStream.Load().(rtcpReadCloser); ok {
 		return value.Close()
 	}
 
@@ -93,7 +96,7 @@ func (s *srtpWriterFuture) Close() error {
 }
 
 func (s *srtpWriterFuture) Read(b []byte) (n int, err error) {
-	if value, ok := s.rtcpReadStream.Load().(*srtp.ReadStreamSRTCP); ok {
+	if value, ok := s.rtcpReadStream.Load().(rtcpReadCloser); ok {
 		return value.Read(b)
 	}
 
@@ -105,7 +108,7 @@ func (s *srtpWriterFuture) Read(b []byte) (n int, err error) {
 }
 
 func (s *srtpWriterFuture) SetReadDeadline(t time.Time) error {
-	if value, ok := s.rtcpReadStream.Load().(*srtp.ReadStreamSRTCP); ok {
+	if value, ok := s.rtcpReadStream.Load().(rtcpReadCloser); ok {
 		return value.SetReadDeadline(t)
 	}
 

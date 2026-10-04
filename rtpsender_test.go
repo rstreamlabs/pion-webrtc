@@ -9,14 +9,17 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/transport/v4/test"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_RTPSender_ReplaceTrack(t *testing.T) { //nolint:cyclop
@@ -556,4 +559,59 @@ func Test_RTPSender_SetReadDeadline_Crash(t *testing.T) {
 	assert.Error(t, rtpSender.SetReadDeadline(time.Time{}), errRTPSenderSendNotCalled)
 	assert.NoError(t, stackA.close())
 	assert.NoError(t, stackB.close())
+}
+
+// Feedback uses the transport-wide sequence space even when its destination is
+// a repair SSRC. It must reach the same sender/interceptor as primary feedback.
+func TestRTPSenderReadAssociatedRTCP(t *testing.T) {
+	limit := test.TimeOut(10 * time.Second)
+	defer limit.Stop()
+	defer test.CheckRoutines(t)()
+	sender, receiver, wan := createVNetPair(t, &interceptor.Registry{})
+	defer func() { assert.NoError(t, wan.Stop()); closePairNow(t, sender, receiver) }()
+	track, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeVP8}, "video", "pion")
+	require.NoError(t, err)
+	rtpSender, err := sender.AddTrack(track)
+	require.NoError(t, err)
+	connected := untilConnectionState(PeerConnectionStateConnected, sender, receiver)
+	require.NoError(t, signalPair(sender, receiver))
+	connected.Wait()
+	encoding := rtpSender.GetParameters().Encodings[0]
+	require.NotZero(t, encoding.RTX.SSRC)
+	// Concurrent first reads/writes must initialize exactly one merged reader.
+	var initializers sync.WaitGroup
+	initialized := make(chan any, 16)
+	for range 16 {
+		initializers.Add(1)
+		go func() {
+			defer initializers.Done()
+			future := rtpSender.trackEncodings[0].srtpStream
+			assert.NoError(t, future.init(false))
+			initialized <- future.rtcpReadStream.Load()
+		}()
+	}
+	initializers.Wait()
+	close(initialized)
+	for reader := range initialized {
+		assert.Same(t, rtpSender.trackEncodings[0].srtpStream.rtcpReadStream.Load(), reader)
+	}
+	// Initializing before reception also prevents unknown-stream handling from
+	// hiding a failure to register the repair SSRC.
+	require.NoError(t, rtpSender.SetReadDeadline(time.Now().Add(time.Second)))
+	for _, ssrc := range []SSRC{encoding.SSRC, encoding.RTX.SSRC} {
+		feedback := &rtcp.TransportLayerCC{
+			Header:     rtcp.Header{Count: rtcp.FormatTCC, Type: rtcp.TypeTransportSpecificFeedback, Length: 5},
+			SenderSSRC: 42, MediaSSRC: uint32(ssrc), BaseSequenceNumber: 100, PacketStatusCount: 1,
+			PacketChunks: []rtcp.PacketStatusChunk{&rtcp.RunLengthChunk{
+				Type: rtcp.TypeTCCRunLengthChunk, PacketStatusSymbol: rtcp.TypeTCCPacketNotReceived, RunLength: 1,
+			}},
+		}
+		require.NoError(t, receiver.WriteRTCP([]rtcp.Packet{feedback}))
+		packets, _, readErr := rtpSender.ReadRTCP()
+		require.NoError(t, readErr, "feedback addressed to SSRC %d", ssrc)
+		require.Len(t, packets, 1)
+		actual, ok := packets[0].(*rtcp.TransportLayerCC)
+		require.True(t, ok)
+		assert.Equal(t, uint32(ssrc), actual.MediaSSRC)
+	}
 }
