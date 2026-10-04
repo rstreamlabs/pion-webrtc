@@ -8,7 +8,6 @@ package webrtc
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -16,12 +15,11 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
+	"github.com/pion/transport/v4/test"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-var errReceiveOfferTimeout = fmt.Errorf("timed out waiting to receive offer")
 
 func TestStatsTimestampTime(t *testing.T) {
 	for _, test := range []struct {
@@ -1160,21 +1158,16 @@ func TestStatsUnmarshal(t *testing.T) {
 	}
 }
 
-func waitWithTimeout(t *testing.T, wg *sync.WaitGroup) {
+func waitForStatsEvent[T any](t *testing.T, done <-chan T) T {
 	t.Helper()
-
-	// Wait for all of the event handlers to be triggered.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		done <- struct{}{}
-	}()
-	timeout := time.After(5 * time.Second)
 	select {
-	case <-done:
-		break
-	case <-timeout:
-		assert.Fail(t, "timed out waiting for waitgroup")
+	case event := <-done:
+		return event
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "timed out waiting for stats event")
+		var zero T
+
+		return zero
 	}
 }
 
@@ -1303,49 +1296,6 @@ func findInboundRTPStatsBySSRC(report StatsReport, ssrc SSRC) []InboundRTPStream
 	return result
 }
 
-func signalPairForStats(pcOffer *PeerConnection, pcAnswer *PeerConnection) error {
-	offerChan := make(chan SessionDescription)
-	pcOffer.OnICECandidate(func(candidate *ICECandidate) {
-		if candidate == nil {
-			offerChan <- *pcOffer.PendingLocalDescription()
-		}
-	})
-
-	offer, err := pcOffer.CreateOffer(nil)
-	if err != nil {
-		return err
-	}
-	if err := pcOffer.SetLocalDescription(offer); err != nil {
-		return err
-	}
-
-	timeout := time.After(3 * time.Second)
-	select {
-	case <-timeout:
-		return errReceiveOfferTimeout
-	case offer := <-offerChan:
-		if err := pcAnswer.SetRemoteDescription(offer); err != nil {
-			return err
-		}
-
-		answer, err := pcAnswer.CreateAnswer(nil)
-		if err != nil {
-			return err
-		}
-
-		if err = pcAnswer.SetLocalDescription(answer); err != nil {
-			return err
-		}
-
-		err = pcOffer.SetRemoteDescription(answer)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	}
-}
-
 func TestStatsConvertState(t *testing.T) {
 	testCases := []struct {
 		ice   ice.CandidatePairState
@@ -1387,8 +1337,10 @@ func TestStatsConvertState(t *testing.T) {
 }
 
 func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves multiple branches and waits
+	t.Cleanup(test.CheckRoutines(t))
 	offerPC, answerPC, err := newPair()
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer closePairNow(t, offerPC, answerPC)
 
 	track1, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeVP8}, "video", "pion1")
 	require.NoError(t, err)
@@ -1418,16 +1370,16 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 		assert.NoError(t, offerDC.Send(msg))
 	})
 
-	dcWait := sync.WaitGroup{}
-	dcWait.Add(1)
+	messageReceived := make(chan struct{})
+	var messageOnce sync.Once
 
-	answerDCChan := make(chan *DataChannel)
+	answerDCChan := make(chan *DataChannel, 1)
 	answerPC.OnDataChannel(func(d *DataChannel) {
 		d.OnOpen(func() {
 			answerDCChan <- d
 		})
 		d.OnMessage(func(DataChannelMessage) {
-			dcWait.Done()
+			messageOnce.Do(func() { close(messageReceived) })
 		})
 	})
 
@@ -1456,10 +1408,14 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 		})
 	})
 
-	assert.NoError(t, signalPairForStats(offerPC, answerPC))
-	waitWithTimeout(t, &dcWait)
+	// Exchange gathered candidates on both sides without adding the helper's
+	// extra data channel, which would change the statistics under test.
+	require.NoError(t, signalPairWithOptions(offerPC, answerPC, func(options *signalPairOptions) {
+		options.disableInitialDataChannel = true
+	}))
+	waitForStatsEvent(t, messageReceived)
 
-	answerDC := <-answerDCChan
+	answerDC := waitForStatsEvent(t, answerDCChan)
 
 	reportPCOffer := offerPC.GetStats()
 	reportPCAnswer := answerPC.GetStats()
@@ -1550,13 +1506,10 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 	}
 
 	// Close answer DC now
-	dcWait = sync.WaitGroup{}
-	dcWait.Add(1)
-	offerDC.OnClose(func() {
-		dcWait.Done()
-	})
+	channelClosed := make(chan struct{})
+	offerDC.OnClose(func() { close(channelClosed) })
 	assert.NoError(t, answerDC.Close())
-	waitWithTimeout(t, &dcWait)
+	waitForStatsEvent(t, channelClosed)
 	time.Sleep(10 * time.Millisecond)
 
 	reportPCOffer = offerPC.GetStats()
@@ -1593,8 +1546,6 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 	for i := range certificates {
 		assert.NotEmpty(t, getCertificateStats(t, reportPCOffer, &certificates[i]))
 	}
-
-	closePairNow(t, offerPC, answerPC)
 }
 
 func TestPeerConnection_GetStats_Closed(t *testing.T) {

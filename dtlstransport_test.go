@@ -25,6 +25,7 @@ import (
 	"github.com/pion/transport/v4/test"
 	"github.com/pion/webrtc/v4/internal/mux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // An invalid fingerprint MUST cause DTLSTransport to go to failed state.
@@ -72,7 +73,7 @@ func TestInvalidFingerprintCausesFailed(t *testing.T) { //nolint:cyclop
 		}
 	})
 
-	offerChan := make(chan SessionDescription)
+	offerChan := make(chan SessionDescription, 1)
 	pcOffer.OnICECandidate(func(candidate *ICECandidate) {
 		if candidate == nil {
 			offerChan <- *pcOffer.PendingLocalDescription()
@@ -103,10 +104,16 @@ func TestInvalidFingerprintCausesFailed(t *testing.T) { //nolint:cyclop
 
 		answer, err := pcAnswer.CreateAnswer(nil)
 		assert.NoError(t, err)
-		assert.NoError(t, pcAnswer.SetLocalDescription(answer))
+		answerGathered := GatheringCompletePromise(pcAnswer)
+		require.NoError(t, pcAnswer.SetLocalDescription(answer))
+		select {
+		case <-answerGathered:
+		case <-time.After(3 * time.Second):
+			require.FailNow(t, "timed out gathering answering ICE candidates")
+		}
 
 		answer.SDP = re.ReplaceAllString(
-			answer.SDP,
+			pcAnswer.LocalDescription().SDP,
 			"sha-256 AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA\r",
 		)
 
