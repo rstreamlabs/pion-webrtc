@@ -34,6 +34,7 @@ type TrackRemote struct {
 	kind        RTPCodecType
 	ssrc        SSRC
 	rtxSsrc     SSRC
+	fecSsrc     SSRC
 	codec       RTPCodecParameters
 	params      RTPParameters
 	rid         string
@@ -53,6 +54,14 @@ func newTrackRemote(kind RTPCodecType, ssrc, rtxSsrc SSRC, rid string, receiver 
 		rid:      rid,
 		receiver: receiver,
 	}
+}
+
+// FecSSRC returns the FlexFEC SSRC associated with the track, or zero when none was negotiated.
+func (t *TrackRemote) FecSSRC() SSRC {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.fecSsrc
 }
 
 // ID is the unique identifier for this Track. This should be unique for the

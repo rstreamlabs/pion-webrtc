@@ -244,6 +244,8 @@ var (
 	errRTPReceiverReceiveAlreadyCalled        = errors.New("Receive has already been called")
 	errRTPReceiverWithSSRCTrackStreamNotFound = errors.New("unable to find stream for Track with SSRC")
 	errRTPReceiverForRIDTrackStreamNotFound   = errors.New("no trackStreams found for RID")
+	errRTPReceiverFECCodecNotFound            = errors.New("FlexFEC SSRC was negotiated without a FlexFEC codec")
+	errRTPReceiverFECStreamNotFound           = errors.New("RTP receiver does not have one FlexFEC repair stream")
 
 	errRTPSenderTrackNil             = errors.New("Track must not be nil")
 	errRTPSenderDTLSTransportNil     = errors.New("DTLSTransport must not be nil")
