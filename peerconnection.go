@@ -2498,7 +2498,7 @@ func (pc *PeerConnection) GracefulClose() error {
 	return pc.close(true /* shouldGracefullyClose */)
 }
 
-func (pc *PeerConnection) close(shouldGracefullyClose bool) error { //nolint:cyclop
+func (pc *PeerConnection) close(shouldGracefullyClose bool) (err error) { //nolint:cyclop
 	// https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close (step #1)
 	// https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close (step #2)
 
@@ -2574,6 +2574,14 @@ func (pc *PeerConnection) close(shouldGracefullyClose bool) error { //nolint:cyc
 	if isAlreadyClosingOrClosed {
 		return util.FlattenErrs(doGracefulCloseOps())
 	}
+
+	// DTLS close-notify (or another final write) can block before normal
+	// shutdown reaches ICE. Preserve normal close ordering, but interrupt
+	// transport I/O if it prevents this already-closing peer from finishing.
+	finishTransportClose := stopICEOnCloseTimeout(pc.iceTransport)
+	defer func() {
+		err = util.FlattenErrs([]error{err, finishTransportClose()})
+	}()
 
 	// https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close (step #3)
 	pc.signalingState.Set(SignalingStateClosed)
