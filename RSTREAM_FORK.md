@@ -22,3 +22,8 @@ preserve these fork extensions until each is provided by the upstream release.
 consumers; `SetICEBindingRequestHandlerV4` installs a native STUN v4 callback.
 The legacy adapter copies public message fields in both directions so callback
 mutations and candidate-pair decisions remain visible to the ICE agent.
+
+The Linux CI keeps the full race/benchmark suite and cross-package coverage.
+GitHub retains its logs, coverage profile and summary for 90 days. This fork
+has no Codecov upload credential; evidence stays with the reviewed workflow
+instead of relying on the upstream project's upload service.
