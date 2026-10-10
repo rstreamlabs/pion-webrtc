@@ -18,7 +18,7 @@ import (
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 	"github.com/pion/transport/v4/test"
 	"github.com/pion/transport/v4/vnet"
 	"github.com/pion/turn/v5"
@@ -1358,9 +1358,9 @@ func TestICEGatherer_StaticLocalCredentialsVNet(t *testing.T) { //nolint:cyclop
 
 	const (
 		offerUfrag  = "offerufrag123"
-		offerPwd    = "offerpassword123456"
+		offerPwd    = "offerpassword123456789"
 		answerUfrag = "answerufrag123"
-		answerPwd   = "answerpassword123456"
+		answerPwd   = "answerpassword12345678"
 	)
 
 	pcOffer, err := NewAPI(WithSettingEngine(buildSE(offerNet, offerUfrag, offerPwd))).NewPeerConnection(Configuration{})
@@ -1507,7 +1507,7 @@ func TestICEGatherer_MaxBindingRequests(t *testing.T) { //nolint:cyclop
 	answerSE.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	answerSE.SetNetworkTypes([]NetworkType{NetworkTypeUDP4})
 	answerSE.SetNet(answerNet)
-	answerSE.SetICEBindingRequestHandler(func(_ *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
+	answerSE.SetICEBindingRequestHandlerV4(func(_ *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
 		bindingRequests.Add(1)
 		select {
 		case firstRequest <- struct{}{}:
@@ -2507,7 +2507,7 @@ func buildRenominationVNetPair(
 		}
 	}
 	if bindingHandler != nil {
-		answerSE.SetICEBindingRequestHandler(bindingHandler)
+		answerSE.SetICEBindingRequestHandlerV4(bindingHandler)
 	}
 
 	offerPC, err := NewAPI(WithSettingEngine(offerSE)).NewPeerConnection(Configuration{})
@@ -2853,7 +2853,7 @@ func buildStagedRenominationPair(
 	answerSE.SetHostAcceptanceMinWait(3 * time.Second)
 	assert.NoError(t, answerSE.SetICERenomination(configuredRenominationOptions...))
 	if bindingHandler != nil {
-		answerSE.SetICEBindingRequestHandler(bindingHandler)
+		answerSE.SetICEBindingRequestHandlerV4(bindingHandler)
 	}
 
 	offerPC, err := NewAPI(WithSettingEngine(offerSE)).NewPeerConnection(Configuration{})

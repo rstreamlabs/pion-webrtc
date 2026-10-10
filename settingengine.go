@@ -18,7 +18,7 @@ import (
 	"github.com/pion/dtls/v3/pkg/protocol/handshake"
 	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 	"github.com/pion/transport/v4"
 	"github.com/pion/transport/v4/packetio"
 	"golang.org/x/net/proxy"
@@ -691,12 +691,12 @@ func (e *SettingEngine) SetSCTPCwndCAStep(cwndCAStep uint32) {
 	e.sctp.cwndCAStep = cwndCAStep
 }
 
-// SetICEBindingRequestHandler sets a callback that is fired on a STUN BindingRequest
+// SetICEBindingRequestHandlerV4 sets a callback that is fired on a STUN BindingRequest
 // This allows users to do things like
 // - Log incoming Binding Requests for debugging
 // - Implement draft-thatcher-ice-renomination
 // - Implement custom CandidatePair switching logic.
-func (e *SettingEngine) SetICEBindingRequestHandler(
+func (e *SettingEngine) SetICEBindingRequestHandlerV4(
 	bindingRequestHandler func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool,
 ) {
 	e.iceBindingRequestHandler = bindingRequestHandler
