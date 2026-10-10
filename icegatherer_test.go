@@ -1507,7 +1507,7 @@ func TestICEGatherer_MaxBindingRequests(t *testing.T) { //nolint:cyclop
 	answerSE.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	answerSE.SetNetworkTypes([]NetworkType{NetworkTypeUDP4})
 	answerSE.SetNet(answerNet)
-	answerSE.SetICEBindingRequestHandler(func(_ *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
+	answerSE.SetICEBindingRequestHandlerV4(func(_ *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
 		bindingRequests.Add(1)
 		select {
 		case firstRequest <- struct{}{}:
@@ -2507,7 +2507,7 @@ func buildRenominationVNetPair(
 		}
 	}
 	if bindingHandler != nil {
-		answerSE.SetICEBindingRequestHandler(bindingHandler)
+		answerSE.SetICEBindingRequestHandlerV4(bindingHandler)
 	}
 
 	offerPC, err := NewAPI(WithSettingEngine(offerSE)).NewPeerConnection(Configuration{})
@@ -2853,7 +2853,7 @@ func buildStagedRenominationPair(
 	answerSE.SetHostAcceptanceMinWait(3 * time.Second)
 	assert.NoError(t, answerSE.SetICERenomination(configuredRenominationOptions...))
 	if bindingHandler != nil {
-		answerSE.SetICEBindingRequestHandler(bindingHandler)
+		answerSE.SetICEBindingRequestHandlerV4(bindingHandler)
 	}
 
 	offerPC, err := NewAPI(WithSettingEngine(offerSE)).NewPeerConnection(Configuration{})

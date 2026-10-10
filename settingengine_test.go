@@ -409,12 +409,12 @@ func TestSetICEUseCandidateCheckPriority(t *testing.T) {
 	assert.False(t, settingEngine.iceUseCandidateCheckPriority)
 }
 
-func TestSetICEBindingRequestHandler(t *testing.T) {
+func TestSetICEBindingRequestHandlerV4(t *testing.T) {
 	seenICEControlled, seenICEControlledCancel := context.WithCancel(context.Background())
 	seenICEControlling, seenICEControllingCancel := context.WithCancel(context.Background())
 
 	settingEngine := SettingEngine{}
-	settingEngine.SetICEBindingRequestHandler(func(m *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
+	settingEngine.SetICEBindingRequestHandlerV4(func(m *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
 		for _, a := range m.Attributes {
 			switch a.Type {
 			case stun.AttrICEControlled:

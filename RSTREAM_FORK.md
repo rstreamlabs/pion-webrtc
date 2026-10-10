@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly> -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # rstream compatibility branch
 
 This fork retains the negotiated FlexFEC receiver extension, sender-associated
@@ -14,3 +17,8 @@ Validate the full Go race suite on Linux, plus the FlexFEC, sender RTCP and peer
 shutdown regressions. Validate producer/distributor consumers against the pinned
 revision before updating their module locks. An upstream version update must
 preserve these fork extensions until each is provided by the upstream release.
+
+`SetICEBindingRequestHandler` retains its STUN v3 callback for existing
+consumers; `SetICEBindingRequestHandlerV4` installs a native STUN v4 callback.
+The legacy adapter copies public message fields in both directions so callback
+mutations and candidate-pair decisions remain visible to the ICE agent.
