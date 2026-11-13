@@ -8,12 +8,14 @@ package webrtc
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/pion/dtls/v3"
 	"github.com/pion/sctp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,11 +58,131 @@ func TestGenerateDataChannelID(t *testing.T) {
 		err := testCase.s.generateAndSetDataChannelID(testCase.role, &idPtr)
 		assert.NoError(t, err, "failed to generate data channel id")
 		assert.Equal(t, testCase.result, *idPtr)
-		assert.Contains(
-			t, testCase.s.dataChannelIDsUsed, *idPtr,
-			"expected new id to be added to the map",
-		)
+		assert.Contains(t, testCase.s.dataChannelIDsUsed, *idPtr, "expected new id to be added to the map")
 	}
+}
+
+func TestSCTPTransportStartContextCanceled(t *testing.T) {
+	transport := NewAPI().NewSCTPTransport(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	require.ErrorIs(t, transport.StartContext(ctx, SCTPCapabilities{}), context.Canceled)
+	assert.False(t, transport.isStarted)
+	assert.Equal(t, SCTPTransportStateConnecting, transport.State())
+	assert.Nil(t, transport.association())
+}
+
+// newSCTPTestDTLSPair connects ICE and DTLS while leaving SCTP unstarted.
+func newSCTPTestDTLSPair(t *testing.T) (*testORTCStack, *testORTCStack) {
+	t.Helper()
+
+	stackA, stackB, err := newORTCPair()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, stackA.close())
+		assert.NoError(t, stackB.close())
+	})
+	signalA, err := stackA.getSignal()
+	require.NoError(t, err)
+	signalB, err := stackB.getSignal()
+	require.NoError(t, err)
+	require.NoError(t, stackA.ice.SetRemoteCandidates(signalB.ICECandidates))
+	require.NoError(t, stackB.ice.SetRemoteCandidates(signalA.ICECandidates))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := make(chan error, 2)
+	for i, stack := range []*testORTCStack{stackA, stackB} {
+		go func() {
+			role, signal := ICERoleControlling, signalB
+			if i == 1 {
+				role, signal = ICERoleControlled, signalA
+			}
+			if err := stack.ice.StartContext(ctx, nil, signal.ICEParameters, &role); err != nil {
+				started <- err
+
+				return
+			}
+			started <- stack.dtls.StartContext(ctx, signal.DTLSParameters)
+		}()
+	}
+	require.NoError(t, <-started)
+	require.NoError(t, <-started)
+
+	return stackA, stackB
+}
+
+func TestSCTPTransportStartContextInterrupted(t *testing.T) {
+	for _, name := range []string{"cancel", "deadline"} {
+		t.Run(name, func(t *testing.T) {
+			stackA, stackB := newSCTPTestDTLSPair(t)
+			timeout, wantErr := 5*time.Second, context.Canceled
+			if name == "deadline" {
+				timeout, wantErr = 250*time.Millisecond, context.DeadlineExceeded
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			started := make(chan error, 1)
+			go func() {
+				started <- stackA.sctp.StartContext(ctx, SCTPCapabilities{})
+			}()
+
+			// Receiving INIT proves that cancellation interrupts an active handshake.
+			require.NoError(t, stackB.dtls.conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+			packet := make([]byte, 1500)
+			_, err := stackB.dtls.conn.Read(packet)
+			require.NoError(t, err)
+			if name == "cancel" {
+				cancel()
+			}
+
+			select {
+			case err = <-started:
+				require.ErrorIs(t, err, wantErr)
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "SCTP handshake did not stop when its context ended")
+			}
+			// Cancellation closes DTLS before any test cleanup runs.
+			require.Eventually(t, func() bool {
+				_, writeErr := stackA.dtls.conn.Write(nil)
+
+				return errors.Is(writeErr, dtls.ErrConnClosed)
+			}, 5*time.Second, time.Millisecond)
+			assert.Nil(t, stackA.sctp.association())
+			assert.Equal(t, SCTPTransportStateClosed, stackA.sctp.State())
+		})
+	}
+}
+
+func TestSCTPTransportStartContextCancelAfterConnected(t *testing.T) {
+	stackA, stackB := newSCTPTestDTLSPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	started := make(chan error, 1)
+	go func() {
+		started <- stackB.sctp.StartContext(ctx, SCTPCapabilities{})
+	}()
+	require.NoError(t, stackA.sctp.StartContext(ctx, SCTPCapabilities{}))
+	require.NoError(t, <-started)
+	cancel()
+
+	// Streams opened before sending are not consumed by the data channel accept loop.
+	sender, err := stackA.sctp.association().OpenStream(0, sctp.PayloadTypeWebRTCBinary)
+	require.NoError(t, err)
+	receiver, err := stackB.sctp.association().OpenStream(0, sctp.PayloadTypeWebRTCBinary)
+	require.NoError(t, err)
+	require.NoError(t, receiver.SetReadDeadline(time.Now().Add(5*time.Second)))
+	message := []byte("still connected")
+	_, err = sender.Write(message)
+	require.NoError(t, err)
+	buf := make([]byte, len(message))
+	n, err := receiver.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, message, buf[:n])
+	assert.Equal(t, SCTPTransportStateConnected, stackA.sctp.State())
 }
 
 func TestSCTPTransportMetadataNotReady(t *testing.T) {
@@ -70,19 +192,9 @@ func TestSCTPTransportMetadataNotReady(t *testing.T) {
 }
 
 func TestNewSCTPTransportMetadata(t *testing.T) {
-	metadata := newSCTPTransportMetadata(sctp.AssociationMetadata{
-		MessageInterleavingEnabled:   true,
-		PartialReliabilityMode:       sctp.PartialReliabilityModeIForwardTSN,
-		ZeroChecksumSendingEnabled:   true,
-		ZeroChecksumReceivingEnabled: true,
-	})
+	metadata := newSCTPTransportMetadata(sctp.AssociationMetadata{MessageInterleavingEnabled: true, PartialReliabilityMode: sctp.PartialReliabilityModeIForwardTSN, ZeroChecksumSendingEnabled: true, ZeroChecksumReceivingEnabled: true})
 
-	assert.Equal(t, SCTPTransportMetadata{
-		MessageInterleavingEnabled:   true,
-		PartialReliabilityMode:       SCTPTransportPartialReliabilityModeIForwardTSN,
-		ZeroChecksumSendingEnabled:   true,
-		ZeroChecksumReceivingEnabled: true,
-	}, metadata)
+	assert.Equal(t, SCTPTransportMetadata{MessageInterleavingEnabled: true, PartialReliabilityMode: SCTPTransportPartialReliabilityModeIForwardTSN, ZeroChecksumSendingEnabled: true, ZeroChecksumReceivingEnabled: true}, metadata)
 }
 
 func TestSCTPTransport_sctpClientOptions_IncludesOptionalOptions(t *testing.T) {
@@ -202,10 +314,7 @@ func TestSCTPTransportOnClose(t *testing.T) {
 			dc, createErr := offerPC.CreateDataChannel(expectedLabel, nil)
 			assert.NoError(t, createErr, "Failed to create a PC pair for testing")
 			dc.OnMessage(func(msg DataChannelMessage) {
-				assert.Equal(
-					t, []byte("hello"), msg.Data,
-					"invalid msg received",
-				)
+				assert.Equal(t, []byte("hello"), msg.Data, "invalid msg received")
 				recvMsg <- struct{}{}
 			})
 			dc.OnOpen(func() {
@@ -329,10 +438,7 @@ func TestSCTPTransportOutOfBandNegotiatedDataChannelDetach(t *testing.T) { //nol
 			negotiated := true
 			id := uint16(0)
 			readDetach := make(chan struct{})
-			dc1, err := offerPC.CreateDataChannel("", &DataChannelInit{
-				Negotiated: &negotiated,
-				ID:         &id,
-			})
+			dc1, err := offerPC.CreateDataChannel("", &DataChannelInit{Negotiated: &negotiated, ID: &id})
 			assert.NoError(t, err)
 
 			dc1.OnOpen(func() {
@@ -341,10 +447,7 @@ func TestSCTPTransportOutOfBandNegotiatedDataChannelDetach(t *testing.T) { //nol
 			})
 
 			writeDetach := make(chan struct{})
-			dc2, err := answerPC.CreateDataChannel("", &DataChannelInit{
-				Negotiated: &negotiated,
-				ID:         &id,
-			})
+			dc2, err := answerPC.CreateDataChannel("", &DataChannelInit{Negotiated: &negotiated, ID: &id})
 			assert.NoError(t, err)
 
 			dc2.OnOpen(func() {

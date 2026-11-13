@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
@@ -36,9 +36,7 @@ func Test_ORTC_Media(t *testing.T) {
 
 	rtpReceiver, err := stackB.api.NewRTPReceiver(RTPCodecTypeVideo, stackB.dtls)
 	assert.NoError(t, err)
-	assert.NoError(t, rtpReceiver.Receive(RTPReceiveParameters{Encodings: []RTPDecodingParameters{
-		{RTPCodingParameters: rtpSender.GetParameters().Encodings[0].RTPCodingParameters},
-	}}))
+	assert.NoError(t, rtpReceiver.Receive(RTPReceiveParameters{Encodings: []RTPDecodingParameters{{RTPCodingParameters: rtpSender.GetParameters().Encodings[0].RTPCodingParameters}}}))
 
 	seenPacket, seenPacketCancel := context.WithCancel(context.Background())
 	go func() {

@@ -105,6 +105,18 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			"h265",
+			"video/h265",
+			90000,
+			0,
+			"key-name=value",
+			&h265FMTP{
+				parameters: map[string]string{
+					"key-name": "value",
+				},
+			},
+		},
+		{
 			"vp9",
 			"video/vp9",
 			90000,
@@ -138,8 +150,11 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestMatch(t *testing.T) { //nolint:maintidx
+func TestMatch(t *testing.T) {
 	consistString := map[bool]string{true: "consist", false: "inconsist"}
+	parseH265 := func(line string) FMTP {
+		return Parse("video/h265", 90000, 0, line)
+	}
 
 	for _, ca := range []struct {
 		name    string
@@ -433,6 +448,42 @@ func TestMatch(t *testing.T) { //nolint:maintidx
 			false,
 		},
 		{
+			"h265 downgraded level",
+			parseH265("level-id=186;profile-id=1;tier-flag=0;tx-mode=SRST"),
+			parseH265("level-id=93;profile-id=1;tier-flag=0;tx-mode=SRST"),
+			true,
+		},
+		{
+			"h265 inferred defaults and ignored sprop parameter",
+			parseH265(""),
+			parseH265("profile-id=1;tier-flag=0;tx-mode=srst;sprop-vps=ignored"),
+			true,
+		},
+		{
+			"h265 inconsistent different kind",
+			parseH265(""),
+			&genericFMTP{},
+			false,
+		},
+		{
+			"h265 inconsistent different profile",
+			parseH265("profile-id=1"),
+			parseH265("profile-id=2"),
+			false,
+		},
+		{
+			"h265 inconsistent different tier",
+			parseH265("tier-flag=0"),
+			parseH265("tier-flag=1"),
+			false,
+		},
+		{
+			"h265 inconsistent different transmission mode",
+			parseH265("tx-mode=SRST"),
+			parseH265("tx-mode=MRST"),
+			false,
+		},
+		{
 			"vp9 equal",
 			&vp9FMTP{
 				parameters: map[string]string{
@@ -700,18 +751,30 @@ func TestMatch(t *testing.T) { //nolint:maintidx
 		t.Run(ca.name, func(t *testing.T) {
 			c := ca.a.Match(ca.b)
 			assert.Equal(t, ca.consist, c)
-			assert.Equal(
-				t, ca.consist, c,
-				"'%s' and '%s' are expected to be %s, but treated as %s",
-				ca.a, ca.b, consistString[ca.consist], consistString[c],
-			)
+			assert.Equal(t, ca.consist, c, "'%s' and '%s' are expected to be %s, but treated as %s", ca.a, ca.b, consistString[ca.consist], consistString[c])
 
 			c = ca.b.Match(ca.a)
-			assert.Equalf(
-				t, ca.consist, c,
-				"'%s' and '%s' are expected to be %s, but treated as %s",
-				ca.b, ca.a, consistString[ca.consist], consistString[c],
-			)
+			assert.Equalf(t, ca.consist, c, "'%s' and '%s' are expected to be %s, but treated as %s", ca.b, ca.a, consistString[ca.consist], consistString[c])
+		})
+	}
+}
+
+func TestDefaults(t *testing.T) {
+	for _, ca := range []struct {
+		mimeType  string
+		clockRate uint32
+		channels  uint16
+	}{
+		{"audio/opus", 48000, 2},
+		{"audio/OPUS", 48000, 2},
+		{"audio/pcmu", 8000, 1},
+		{"audio/PCMA", 8000, 1},
+		{"audio/multiopus", 90000, 1},
+		{"video/vp8", 90000, 0},
+	} {
+		t.Run(ca.mimeType, func(t *testing.T) {
+			assert.Equal(t, ca.clockRate, defaultClockRate(ca.mimeType))
+			assert.Equal(t, ca.channels, defaultChannels(ca.mimeType))
 		})
 	}
 }
