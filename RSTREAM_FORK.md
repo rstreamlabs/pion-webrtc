@@ -34,8 +34,7 @@ instead of relying on the upstream project's upload service.
 The runtime delta from upstream base `0f364c61c11308fbedc4da2bb868f69504632d7d`
 to release 4.2.26 is reconciled on the existing fork history. Consumer pins remain
 immutable fork revisions; their pseudo-version ancestry is not a substitute for
-the reviewed upstream runtime revision above. Fork release/merge automation and
-the landing README are retained rather than replaced with upstream workflows.
+the reviewed upstream runtime revision above. Fork release and merge automation are retained rather than replaced with upstream workflows.
 The security minima remain DTLS 3.1.15 and x/net 0.56.0, with Go 1.25 source
 compatibility. First-party applications use their newer reviewed Go 1.27.4 graph.
 
