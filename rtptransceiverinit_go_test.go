@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -34,16 +34,7 @@ func Test_RTPTransceiverInit_SSRC(t *testing.T) {
 			cancel()
 		})
 
-		_, err = offerer.AddTransceiverFromTrack(track, RTPTransceiverInit{
-			Direction: RTPTransceiverDirectionSendonly,
-			SendEncodings: []RTPEncodingParameters{
-				{
-					RTPCodingParameters: RTPCodingParameters{
-						SSRC: 0,
-					},
-				},
-			},
-		})
+		_, err = offerer.AddTransceiverFromTrack(track, RTPTransceiverInit{Direction: RTPTransceiverDirectionSendonly, SendEncodings: []RTPEncodingParameters{{RTPCodingParameters: RTPCodingParameters{SSRC: 0}}}})
 		assert.NoError(t, err)
 		assert.NoError(t, signalPair(offerer, answerer))
 		sendVideoUntilDone(t, ctx.Done(), []*TrackLocalStaticSample{track})
@@ -60,16 +51,7 @@ func Test_RTPTransceiverInit_SSRC(t *testing.T) {
 			cancel()
 		})
 
-		_, err = offerer.AddTransceiverFromTrack(track, RTPTransceiverInit{
-			Direction: RTPTransceiverDirectionSendonly,
-			SendEncodings: []RTPEncodingParameters{
-				{
-					RTPCodingParameters: RTPCodingParameters{
-						SSRC: 5000,
-					},
-				},
-			},
-		})
+		_, err = offerer.AddTransceiverFromTrack(track, RTPTransceiverInit{Direction: RTPTransceiverDirectionSendonly, SendEncodings: []RTPEncodingParameters{{RTPCodingParameters: RTPCodingParameters{SSRC: 5000}}}})
 		assert.NoError(t, err)
 		assert.NoError(t, signalPair(offerer, answerer))
 		sendVideoUntilDone(t, ctx.Done(), []*TrackLocalStaticSample{track})

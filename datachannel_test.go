@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -239,17 +239,9 @@ func TestDataChannel_Open(t *testing.T) {
 		ordered := true
 		dataChannelID := uint16(0)
 
-		answerDC, err := answerPC.CreateDataChannel(expectedLabel, &DataChannelInit{
-			ID:         &dataChannelID,
-			Negotiated: &negotiated,
-			Ordered:    &ordered,
-		})
+		answerDC, err := answerPC.CreateDataChannel(expectedLabel, &DataChannelInit{ID: &dataChannelID, Negotiated: &negotiated, Ordered: &ordered})
 		assert.NoError(t, err)
-		offerDC, err := offerPC.CreateDataChannel(expectedLabel, &DataChannelInit{
-			ID:         &dataChannelID,
-			Negotiated: &negotiated,
-			Ordered:    &ordered,
-		})
+		offerDC, err := offerPC.CreateDataChannel(expectedLabel, &DataChannelInit{ID: &dataChannelID, Negotiated: &negotiated, Ordered: &ordered})
 		assert.NoError(t, err)
 
 		answerDC.OnMessage(func(DataChannelMessage) {

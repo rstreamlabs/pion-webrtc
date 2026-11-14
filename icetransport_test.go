@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -114,11 +114,7 @@ func TestICETransport_StartContextStopDoesNotReportCallerCancel(t *testing.T) {
 	case err = <-errCh:
 		assert.Error(t, err)
 		assert.NotErrorIs(t, err, context.Canceled)
-		assert.True(t,
-			errors.Is(err, ice.ErrCanceledByCaller) || errors.Is(err, ice.ErrClosed),
-			"expected ICE shutdown error, got %v",
-			err,
-		)
+		assert.True(t, errors.Is(err, ice.ErrCanceledByCaller) || errors.Is(err, ice.ErrClosed), "expected ICE shutdown error, got %v", err)
 	case <-time.After(time.Second):
 		assert.FailNow(t, "StartContext did not return after Stop")
 	}
@@ -190,10 +186,7 @@ func TestICETransport_OnSelectedCandidatePairChange(t *testing.T) {
 	assert.NoError(t, signalPair(pcOffer, pcAnswer))
 	<-iceComplete
 
-	assert.NotEmpty(
-		t, atomic.LoadInt32(&senderCalledCandidateChange),
-		"Sender ICETransport OnSelectedCandidateChange was never called",
-	)
+	assert.NotEmpty(t, atomic.LoadInt32(&senderCalledCandidateChange), "Sender ICETransport OnSelectedCandidateChange was never called")
 
 	closePairNow(t, pcOffer, pcAnswer)
 }
@@ -217,7 +210,7 @@ func TestICETransport_GetSelectedCandidatePair(t *testing.T) {
 	assert.False(t, statsAvailable)
 
 	assert.NoError(t, signalPair(offerer, answerer))
-	peerConnectionConnected.Wait()
+	<-peerConnectionConnected
 
 	offererSelectedPair, err = offerer.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
 	assert.NoError(t, err)
@@ -244,7 +237,7 @@ func TestICETransport_GetLocalAndRemoteParameters(t *testing.T) {
 	peerConnectionConnected := untilConnectionState(PeerConnectionStateConnected, offerer, answerer)
 
 	assert.NoError(t, signalPair(offerer, answerer))
-	peerConnectionConnected.Wait()
+	<-peerConnectionConnected
 
 	offerLocalParameters, err := offerer.SCTP().Transport().ICETransport().GetLocalParameters()
 	assert.NoError(t, err)

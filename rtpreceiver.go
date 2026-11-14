@@ -687,7 +687,7 @@ func (r *RTPReceiver) receiveForRtx(
 	)
 }
 
-//nolint:gocognit,cyclop
+//nolint:cyclop
 func (r *RTPReceiver) receiveForRtxInternal(
 	ssrc SSRC,
 	rsid string,
@@ -758,22 +758,41 @@ func (r *RTPReceiver) maybeStartRepairStreamReader(track *trackStreams) { //noli
 				return
 			}
 
+			if i == 0 {
+				// Zero-length read: there is nothing to parse, and reading
+				// b[0]/b[i-1] below could either parse stale pool contents
+				// or panic (b[-1]). Skip the packet.
+				r.rtxPool.Put(b) // nolint:staticcheck
+
+				continue
+			}
+
 			// RTX packets have a different payload format. Move the OSN in the payload to the RTP header and rewrite the
 			// payload type and SSRC, so that we can return RTX packets to the caller 'transparently' i.e. in the same format
 			// as non-RTX RTP packets
 			hasExtension := b[0]&0b10000 > 0
 			hasPadding := b[0]&0b100000 > 0
 			csrcCount := b[0] & 0b1111
-			headerLength := uint16(12 + (4 * csrcCount))
+			// headerLength is kept as an int to avoid uint16 wraparound when
+			// a malformed extension length field is large.
+			headerLength := 12 + (4 * int(csrcCount))
 			paddingLength := 0
+			if hasExtension && i < headerLength+4 {
+				// The packet is truncated before the extension header:
+				// the extension length field would be read from bytes
+				// beyond the packet.
+				r.rtxPool.Put(b) // nolint:staticcheck
+
+				continue
+			}
 			if hasExtension {
-				headerLength += 4 * (1 + binary.BigEndian.Uint16(b[headerLength+2:headerLength+4]))
+				headerLength += 4 * (1 + int(binary.BigEndian.Uint16(b[headerLength+2:headerLength+4])))
 			}
 			if hasPadding {
 				paddingLength = int(b[i-1])
 			}
 
-			if i-int(headerLength)-paddingLength < 2 {
+			if i-headerLength-paddingLength < 2 {
 				// BWE probe packet, ignore
 				r.rtxPool.Put(b) // nolint:staticcheck
 
