@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly> -->
 <!-- SPDX-License-Identifier: MIT -->
 
-# rstream compatibility branch
+# rstream WebRTC compatibility fork
 
 This fork retains the negotiated FlexFEC receiver extension, sender-associated
 RTCP delivery and bounded peer transport shutdown used by the rstream video
@@ -50,3 +50,16 @@ load and byte-limit assertions are retained.
 A compatible interceptor fork and producer/distributor qualification are required
 before repinning video consumers. This update does not retire the repair,
 transport-shutdown or legacy STUN callback extensions.
+
+## Build this checkout
+
+Use the Go version declared in `go.mod` or a compatible newer toolchain. From the
+repository root, `go build ./...` compiles the library packages and included
+commands without application credentials. Locked modules must be available in
+the Go cache or downloaded first. Keep the upstream module path: consumers select
+this fork through their reviewed module replacement and immutable revision, not
+by renaming imports or installing an upstream `latest` release.
+
+This build is a local first check. The qualification requirements above still
+apply; it does not certify consuming video applications or replace their pinned
+dependency graph. Upstream usage and attribution remain in `README.md`.
