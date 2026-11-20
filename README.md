@@ -1,3 +1,7 @@
+This fork preserves FlexFEC reception, sender-associated RTCP and bounded peer transport shutdown for rstream video applications.
+
+---
+
 <h1 align="center">
   <a href="https://pion.ly"><img src="./.github/pion-gopher-webrtc.png" alt="Pion WebRTC" height="250px"></a>
   <br>

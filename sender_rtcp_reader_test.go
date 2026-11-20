@@ -14,7 +14,7 @@ import (
 
 	"github.com/pion/rtcp"
 	"github.com/pion/srtp/v3"
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,9 +33,31 @@ func senderRTCPTestSession(t *testing.T) (*srtp.SessionSRTCP, *srtp.WriteStreamS
 	require.NoError(t, err)
 	writer, err := srtp.NewSessionSRTCP(remote, config)
 	require.NoError(t, err)
+	// Mirror PeerConnection: late packets can create an undeclared stream after reader close.
+	var acceptors sync.WaitGroup
+	for _, session := range []*srtp.SessionSRTCP{reader, writer} {
+		acceptors.Add(1)
+		go func() {
+			defer acceptors.Done()
+			var streams []*srtp.ReadStreamSRTCP
+			defer func() {
+				for _, stream := range streams {
+					assert.NoError(t, stream.Close())
+				}
+			}()
+			for {
+				stream, _, acceptErr := session.AcceptStream()
+				if acceptErr != nil {
+					return
+				}
+				streams = append(streams, stream)
+			}
+		}()
+	}
 	t.Cleanup(func() {
 		assert.NoError(t, reader.Close())
 		assert.NoError(t, writer.Close())
+		acceptors.Wait()
 	})
 	stream, err := writer.OpenWriteStream()
 	require.NoError(t, err)

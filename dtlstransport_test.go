@@ -22,7 +22,7 @@ import (
 	dtlsElliptic "github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/protocol/handshake"
 	"github.com/pion/srtp/v3"
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/pion/webrtc/v4/internal/mux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,10 +95,7 @@ func TestInvalidFingerprintCausesFailed(t *testing.T) { //nolint:cyclop
 	case offer := <-offerChan:
 		// Replace with invalid fingerprint
 		re := regexp.MustCompile(`sha-256 (.*?)\r`)
-		offer.SDP = re.ReplaceAllString(
-			offer.SDP,
-			"sha-256 AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA\r",
-		)
+		offer.SDP = re.ReplaceAllString(offer.SDP, "sha-256 AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA\r")
 
 		assert.NoError(t, pcAnswer.SetRemoteDescription(offer))
 
@@ -139,19 +136,13 @@ func TestInvalidFingerprintCausesFailed(t *testing.T) { //nolint:cyclop
 	}
 
 	// Wait for PeerConnection to close (may take longer due to cleanup)
-	offerConnectionHasClosed.Wait()
-	answerConnectionHasClosed.Wait()
+	<-offerConnectionHasClosed
+	<-answerConnectionHasClosed
 
-	assert.Contains(
-		t, []DTLSTransportState{DTLSTransportStateClosed, DTLSTransportStateFailed}, pcOffer.SCTP().Transport().State(),
-		"DTLS Transport should be closed or failed",
-	)
+	assert.Contains(t, []DTLSTransportState{DTLSTransportStateClosed, DTLSTransportStateFailed}, pcOffer.SCTP().Transport().State(), "DTLS Transport should be closed or failed")
 	assert.Nil(t, pcOffer.SCTP().Transport().conn)
 
-	assert.Contains(
-		t, []DTLSTransportState{DTLSTransportStateClosed, DTLSTransportStateFailed}, pcAnswer.SCTP().Transport().State(),
-		"DTLS Transport should be closed or failed",
-	)
+	assert.Contains(t, []DTLSTransportState{DTLSTransportStateClosed, DTLSTransportStateFailed}, pcAnswer.SCTP().Transport().State(), "DTLS Transport should be closed or failed")
 	assert.Nil(t, pcAnswer.SCTP().Transport().conn)
 }
 
@@ -168,7 +159,7 @@ func TestPeerConnection_DTLSRoleSettingEngine(t *testing.T) {
 		assert.NoError(t, signalPair(offerPC, answerPC))
 
 		connectionComplete := untilConnectionState(PeerConnectionStateConnected, answerPC)
-		connectionComplete.Wait()
+		<-connectionComplete
 		closePairNow(t, offerPC, answerPC)
 	}
 
@@ -270,11 +261,7 @@ func TestDTLSTransport_Start_UsesConnectContextMaker(t *testing.T) {
 	}
 
 	iceTransport := NewICETransport(nil, loggerFactory)
-	iceTransport.mux = mux.NewMux(mux.Config{
-		Conn:          conn,
-		BufferSize:    1500,
-		LoggerFactory: loggerFactory,
-	})
+	iceTransport.mux = mux.NewMux(mux.Config{Conn: conn, BufferSize: 1500, LoggerFactory: loggerFactory})
 	defer func() { _ = iceTransport.mux.Close() }()
 
 	transport, err := api.NewDTLSTransport(iceTransport, nil)
@@ -306,11 +293,7 @@ func TestDTLSTransport_Start_ConnectErrorFailsTransport(t *testing.T) {
 	defer func() { _ = remoteConn.Close() }()
 
 	iceTransport := NewICETransport(nil, loggerFactory)
-	iceTransport.mux = mux.NewMux(mux.Config{
-		Conn:          localConn,
-		BufferSize:    1500,
-		LoggerFactory: loggerFactory,
-	})
+	iceTransport.mux = mux.NewMux(mux.Config{Conn: localConn, BufferSize: 1500, LoggerFactory: loggerFactory})
 	defer func() { _ = iceTransport.mux.Close() }()
 
 	transport, err := api.NewDTLSTransport(iceTransport, nil)
@@ -345,11 +328,7 @@ func TestDTLSTransport_Start_HandshakeErrorFailsTransport(t *testing.T) {
 	}
 
 	iceTransport := NewICETransport(nil, loggerFactory)
-	iceTransport.mux = mux.NewMux(mux.Config{
-		Conn:          conn,
-		BufferSize:    1500,
-		LoggerFactory: loggerFactory,
-	})
+	iceTransport.mux = mux.NewMux(mux.Config{Conn: conn, BufferSize: 1500, LoggerFactory: loggerFactory})
 	defer func() { _ = iceTransport.mux.Close() }()
 
 	transport, err := api.NewDTLSTransport(iceTransport, nil)
