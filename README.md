@@ -1,4 +1,4 @@
-This fork retains media-repair, sender RTCP and transport-lifecycle changes needed by rstream’s video applications. The [fork notes](RSTREAM_FORK.md) identify the extensions to preserve until an upstream release can replace them. The upstream project README follows.
+This fork preserves FlexFEC reception, sender-associated RTCP and bounded peer transport shutdown for rstream video applications.
 
 ---
 
