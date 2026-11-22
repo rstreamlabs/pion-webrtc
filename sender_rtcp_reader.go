@@ -14,7 +14,7 @@ import (
 
 	"github.com/pion/rtcp"
 	"github.com/pion/srtp/v3"
-	"github.com/pion/transport/v4/packetio"
+	"github.com/pion/transport/v5/packetio"
 )
 
 type rtcpReadCloser interface {
@@ -83,7 +83,7 @@ func (r *senderRTCPReader) forward(stream *srtp.ReadStreamSRTCP, earlier []SSRC)
 		if !forwardSenderRTCP(packet[:n], earlier) {
 			continue
 		}
-		if _, err = r.buffer.Write(packet[:n]); err != nil && !errors.Is(err, packetio.ErrFull) {
+		if _, err = r.buffer.Write(packet[:n], nil); err != nil && !errors.Is(err, packetio.ErrFull) {
 			r.stop(err)
 
 			return
@@ -129,7 +129,7 @@ func (r *senderRTCPReader) stop(err error) {
 }
 
 func (r *senderRTCPReader) Read(packet []byte) (int, error) {
-	n, err := r.buffer.Read(packet)
+	n, _, err := r.buffer.Read(packet, nil)
 	if errors.Is(err, io.EOF) {
 		return n, r.readErr
 	}

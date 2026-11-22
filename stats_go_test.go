@@ -8,6 +8,7 @@ package webrtc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -15,7 +16,7 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,7 @@ type statSample struct {
 	json  string
 }
 
-func getStatsSamples() []statSample { //nolint:cyclop,maintidx
+func getStatsSamples() []statSample { //nolint:cyclop
 	codecStats := CodecStats{
 		Timestamp:      1688978831527.718,
 		Type:           StatsTypeCodec,
@@ -829,8 +830,9 @@ func getStatsSamples() []statSample { //nolint:cyclop,maintidx
 		LocalCertificateID: "CFF4:4F:C4:C7:F3:31:6C:B9:D5:AD:19:64:05:9F:2F:E9:00:70:56:1E:BA:92:29:3A:08:CE:1B:27:CF:2D:AB:24",
 		//nolint:lll
 		RemoteCertificateID: "CF62:AF:88:F7:F3:0F:D6:C4:93:91:1E:AD:52:F0:A4:12:04:F9:48:E7:06:16:BA:A3:86:26:8F:1E:38:1C:48:49",
+		TLSVersion:          "FEFD",
 		DTLSCipher:          "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-		SRTPCipher:          "AES_CM_128_HMAC_SHA1_80",
+		SRTPCipher:          "SRTP_AES128_CM_HMAC_SHA1_80",
 	}
 	//nolint:lll
 	transportStatsJSON := `
@@ -849,8 +851,9 @@ func getStatsSamples() []statSample { //nolint:cyclop,maintidx
   "selectedCandidatePairId": "CPxIhBDNnT_sPDhy1TB",
   "localCertificateId": "CFF4:4F:C4:C7:F3:31:6C:B9:D5:AD:19:64:05:9F:2F:E9:00:70:56:1E:BA:92:29:3A:08:CE:1B:27:CF:2D:AB:24",
   "remoteCertificateId": "CF62:AF:88:F7:F3:0F:D6:C4:93:91:1E:AD:52:F0:A4:12:04:F9:48:E7:06:16:BA:A3:86:26:8F:1E:38:1C:48:49",
+  "tlsVersion": "FEFD",
   "dtlsCipher": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-  "srtpCipher": "AES_CM_128_HMAC_SHA1_80"
+  "srtpCipher": "SRTP_AES128_CM_HMAC_SHA1_80"
 }
 `
 	iceCandidatePairStats := ICECandidatePairStats{
@@ -1322,17 +1325,11 @@ func TestStatsConvertState(t *testing.T) {
 	s, err := toStatsICECandidatePairState(ice.CandidatePairState(42))
 
 	assert.Error(t, err)
-	assert.Equal(t,
-		StatsICECandidatePairState("Unknown"),
-		s)
+	assert.Equal(t, StatsICECandidatePairState("Unknown"), s)
 	for i, testCase := range testCases {
 		s, err := toStatsICECandidatePairState(testCase.ice)
 		assert.NoError(t, err)
-		assert.Equal(t,
-			testCase.stats,
-			s,
-			"testCase: %d %v", i, testCase,
-		)
+		assert.Equal(t, testCase.stats, s, "testCase: %d %v", i, testCase)
 	}
 }
 
@@ -1350,6 +1347,17 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 
 	baseLineReportPCOffer := offerPC.GetStats()
 	baseLineReportPCAnswer := answerPC.GetStats()
+	for _, report := range []StatsReport{baseLineReportPCOffer, baseLineReportPCAnswer} {
+		stats := getTransportStats(t, report, "iceTransport")
+		assert.Empty(t, stats.DTLSCipher)
+		assert.Empty(t, stats.SRTPCipher)
+		encoded, marshalErr := json.Marshal(stats)
+		require.NoError(t, marshalErr)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(encoded, &fields))
+		assert.NotContains(t, fields, "dtlsCipher")
+		assert.NotContains(t, fields, "srtpCipher")
+	}
 
 	connStatsOffer := getConnectionStats(t, baseLineReportPCOffer, offerPC)
 	connStatsAnswer := getConnectionStats(t, baseLineReportPCAnswer, answerPC)
@@ -1458,13 +1466,7 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 	assert.NoError(t, track1.WriteSample(sample))
 
 	// Wait until the remote track has read one RTP packet (avoids racing GetStats with TrackRemote initialization).
-	assert.Eventually(
-		t,
-		gotFirstPacket.Load,
-		2*time.Second,
-		10*time.Millisecond,
-		"Expected to read an RTP packet",
-	)
+	assert.Eventually(t, gotFirstPacket.Load, 2*time.Second, 10*time.Millisecond, "Expected to read an RTP packet")
 
 	// Get fresh stats after sending the sample
 	reportPCAnswer = answerPC.GetStats()
@@ -1533,6 +1535,12 @@ func TestPeerConnection_GetStats(t *testing.T) { //nolint:cyclop // involves mul
 
 	answerICETransportStats := getTransportStats(t, reportPCAnswer, "iceTransport")
 	offerICETransportStats := getTransportStats(t, reportPCOffer, "iceTransport")
+	assert.Equal(t, "FEFD", offerICETransportStats.TLSVersion)
+	assert.Equal(t, "FEFD", answerICETransportStats.TLSVersion)
+	assert.Equal(t, "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256", offerICETransportStats.DTLSCipher)
+	assert.Equal(t, offerICETransportStats.DTLSCipher, answerICETransportStats.DTLSCipher)
+	assert.Equal(t, "SRTP_AEAD_AES_256_GCM", offerICETransportStats.SRTPCipher)
+	assert.Equal(t, offerICETransportStats.SRTPCipher, answerICETransportStats.SRTPCipher)
 	assert.GreaterOrEqual(t, offerICETransportStats.BytesSent, answerICETransportStats.BytesReceived)
 	assert.GreaterOrEqual(t, answerICETransportStats.BytesSent, offerICETransportStats.BytesReceived)
 
@@ -1600,12 +1608,7 @@ func TestUnmarshalStatsJSON_SCTPTransport(t *testing.T) {
 	assert.EqualValues(t, 1200, st.MTU)
 	assert.EqualValues(t, 7, st.UNACKData)
 	require.NotNil(t, st.Metadata)
-	assert.Equal(t, &SCTPTransportMetadata{
-		MessageInterleavingEnabled:   true,
-		PartialReliabilityMode:       SCTPTransportPartialReliabilityModeIForwardTSN,
-		ZeroChecksumSendingEnabled:   true,
-		ZeroChecksumReceivingEnabled: true,
-	}, st.Metadata)
+	assert.Equal(t, &SCTPTransportMetadata{MessageInterleavingEnabled: true, PartialReliabilityMode: SCTPTransportPartialReliabilityModeIForwardTSN, ZeroChecksumSendingEnabled: true, ZeroChecksumReceivingEnabled: true}, st.Metadata)
 	assert.EqualValues(t, 12345, st.BytesSent)
 	assert.EqualValues(t, 67890, st.BytesReceived)
 }
@@ -1990,12 +1993,7 @@ func TestUnmarshalSCTPTransportStats_Success(t *testing.T) {
 	assert.Equal(t, uint32(1200), got.MTU)
 	assert.Equal(t, uint32(3), got.UNACKData)
 	require.NotNil(t, got.Metadata)
-	assert.Equal(t, &SCTPTransportMetadata{
-		MessageInterleavingEnabled:   true,
-		PartialReliabilityMode:       SCTPTransportPartialReliabilityModeIForwardTSN,
-		ZeroChecksumSendingEnabled:   true,
-		ZeroChecksumReceivingEnabled: true,
-	}, got.Metadata)
+	assert.Equal(t, &SCTPTransportMetadata{MessageInterleavingEnabled: true, PartialReliabilityMode: SCTPTransportPartialReliabilityModeIForwardTSN, ZeroChecksumSendingEnabled: true, ZeroChecksumReceivingEnabled: true}, got.Metadata)
 	assert.Equal(t, uint64(1000), got.BytesSent)
 	assert.Equal(t, uint64(2000), got.BytesReceived)
 }
@@ -2373,4 +2371,29 @@ func TestDefaultAudioPlayoutStatsProvider_MultipleProviders(t *testing.T) {
 	ids := []string{stats[0].ID, stats[1].ID}
 	assert.Contains(t, ids, "media-playout-speaker")
 	assert.Contains(t, ids, "media-playout-headphones")
+}
+
+func TestStatsReport_DataChannelsHaveDistinctStableIDs(t *testing.T) {
+	pc, err := NewPeerConnection(Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
+	channels := make([]*DataChannel, 128)
+	for i := range channels {
+		channels[i], err = pc.CreateDataChannel(fmt.Sprintf("channel-%d", i), nil)
+		require.NoError(t, err)
+	}
+	first := pc.GetStats()
+	second := pc.GetStats()
+	ids := make(map[string]bool)
+	for _, channel := range channels {
+		stats, ok := first.GetDataChannelStats(channel)
+		require.True(t, ok)
+		require.Equal(t, channel.Label(), stats.Label)
+		require.False(t, ids[stats.ID], "duplicate data-channel stats ID")
+		ids[stats.ID] = true
+		current, ok := second.GetDataChannelStats(channel)
+		require.True(t, ok)
+		require.Equal(t, stats.ID, current.ID)
+	}
 }

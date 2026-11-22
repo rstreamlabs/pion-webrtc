@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/pion/sdp/v3"
-	"github.com/pion/transport/v4/test"
+	"github.com/pion/transport/v5/test"
 	"github.com/pion/webrtc/v4/pkg/rtcerr"
 	"github.com/stretchr/testify/assert"
 )
@@ -107,11 +107,7 @@ func signalPairWithModification(
 	pcAnswer *PeerConnection,
 	modificationFunc func(string) string,
 ) error {
-	return signalPairWithOptions(
-		pcOffer,
-		pcAnswer,
-		withModificationFunc(modificationFunc),
-	)
+	return signalPairWithOptions(pcOffer, pcAnswer, withModificationFunc(modificationFunc))
 }
 
 func signalPair(pcOffer *PeerConnection, pcAnswer *PeerConnection) error {
@@ -139,24 +135,36 @@ func offerMediaHasDirection(offer SessionDescription, kind RTPCodecType, directi
 	return false
 }
 
-func untilConnectionState(state PeerConnectionState, peers ...*PeerConnection) *sync.WaitGroup {
-	var triggered sync.WaitGroup
-	triggered.Add(len(peers))
-
-	for _, p := range peers {
-		var done atomic.Value
-		done.Store(false)
-		hdlr := func(p PeerConnectionState) {
-			if val, ok := done.Load().(bool); ok && (!val && p == state) {
-				done.Store(true)
-				triggered.Done()
-			}
-		}
-
-		p.OnConnectionStateChange(hdlr)
+// eventCountdown returns a function to call once per awaited event and a
+// channel that is closed after count calls. Calls beyond count are ignored.
+func eventCountdown(count int) (func(), <-chan struct{}) {
+	done := make(chan struct{})
+	var remaining atomic.Int64
+	remaining.Store(int64(count))
+	if count <= 0 {
+		close(done)
 	}
 
-	return &triggered
+	return func() {
+		if remaining.Add(-1) == 0 {
+			close(done)
+		}
+	}, done
+}
+
+func untilConnectionState(state PeerConnectionState, peers ...*PeerConnection) <-chan struct{} {
+	peerReached, allReached := eventCountdown(len(peers))
+
+	for _, p := range peers {
+		var once sync.Once
+		p.OnConnectionStateChange(func(s PeerConnectionState) {
+			if s == state {
+				once.Do(peerReached)
+			}
+		})
+	}
+
+	return allReached
 }
 
 func TestNew(t *testing.T) {
@@ -194,9 +202,7 @@ func TestPeerConnection_SetConfiguration(t *testing.T) {
 		{
 			name: "valid",
 			init: func() (*PeerConnection, error) {
-				pc, err := NewPeerConnection(Configuration{
-					ICECandidatePoolSize: 1,
-				})
+				pc, err := NewPeerConnection(Configuration{ICECandidatePoolSize: 1})
 				if err != nil {
 					return pc, err
 				}
@@ -215,6 +221,7 @@ func TestPeerConnection_SetConfiguration(t *testing.T) {
 					RTCPMuxPolicy:               RTCPMuxPolicyRequire,
 					ICECandidatePoolSize:        1,
 					AlwaysNegotiateDataChannels: true,
+					RTPHeaderEncryptionPolicy:   RTPHeaderEncryptionPolicyNegotiate,
 				})
 				if err != nil {
 					return pc, err
@@ -270,11 +277,19 @@ func TestPeerConnection_SetConfiguration(t *testing.T) {
 			wantErr: &rtcerr.InvalidModificationError{Err: ErrModifyingRTCPMuxPolicy},
 		},
 		{
+			name: "update RTPHeaderEncryptionPolicy",
+			init: func() (*PeerConnection, error) {
+				return NewPeerConnection(Configuration{})
+			},
+			config: Configuration{
+				RTPHeaderEncryptionPolicy: RTPHeaderEncryptionPolicyRequire,
+			},
+			wantErr: &rtcerr.InvalidModificationError{Err: errModifyingRTPHeaderEncryptionPolicy},
+		},
+		{
 			name: "update ICECandidatePoolSize",
 			init: func() (*PeerConnection, error) {
-				pc, err := NewPeerConnection(Configuration{
-					ICECandidatePoolSize: 0,
-				})
+				pc, err := NewPeerConnection(Configuration{ICECandidatePoolSize: 0})
 				if err != nil {
 					return pc, err
 				}
@@ -314,16 +329,32 @@ func TestPeerConnection_SetConfiguration(t *testing.T) {
 	}
 }
 
+// TestPeerConnection_SetConfiguration_RejectsBeforeMutating checks that when a SetConfiguration
+// call includes both an invalid, immutable-field change and an otherwise-valid mutable-field
+// change, the rejection leaves the mutable field unapplied instead of partially applying the call.
+func TestPeerConnection_SetConfiguration_RejectsBeforeMutating(t *testing.T) {
+	pc, err := NewPeerConnection(Configuration{})
+	assert.NoError(t, err)
+
+	err = pc.SetConfiguration(Configuration{AlwaysNegotiateDataChannels: true, RTPHeaderEncryptionPolicy: RTPHeaderEncryptionPolicyRequire})
+	assert.Equal(t, &rtcerr.InvalidModificationError{Err: errModifyingRTPHeaderEncryptionPolicy}, err)
+	assert.False(t, pc.GetConfiguration().AlwaysNegotiateDataChannels, "other fields in the same call must not be applied when the policy change is rejected")
+
+	assert.NoError(t, pc.Close())
+}
+
 func TestPeerConnection_GetConfiguration(t *testing.T) {
 	pc, err := NewPeerConnection(Configuration{})
 	assert.NoError(t, err)
 
 	expected := Configuration{
-		ICEServers:           []ICEServer{},
-		ICETransportPolicy:   ICETransportPolicyAll,
-		BundlePolicy:         BundlePolicyBalanced,
-		RTCPMuxPolicy:        RTCPMuxPolicyRequire,
-		ICECandidatePoolSize: 0,
+		ICEServers:                  []ICEServer{},
+		ICETransportPolicy:          ICETransportPolicyAll,
+		BundlePolicy:                BundlePolicyBalanced,
+		RTCPMuxPolicy:               RTCPMuxPolicyRequire,
+		ICECandidatePoolSize:        0,
+		AlwaysNegotiateDataChannels: false,
+		RTPHeaderEncryptionPolicy:   RTPHeaderEncryptionPolicyNegotiate,
 	}
 	actual := pc.GetConfiguration()
 	assert.True(t, &expected != &actual)
@@ -336,7 +367,7 @@ func TestPeerConnection_GetConfiguration(t *testing.T) {
 	// See: https://github.com/pion/webrtc/issues/513.
 	// assert.Equal(t, len(expected.Certificates), len(actual.Certificates))
 	assert.Equal(t, expected.ICECandidatePoolSize, actual.ICECandidatePoolSize)
-	assert.False(t, actual.AlwaysNegotiateDataChannels)
+	assert.Equal(t, expected.AlwaysNegotiateDataChannels, actual.AlwaysNegotiateDataChannels)
 	assert.NoError(t, pc.Close())
 }
 
@@ -425,13 +456,11 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 	// wasCalled is a list of event handlers that were called.
 	wasCalled := []string{}
 	wasCalledMut := &sync.Mutex{}
-	// wg is used to wait for all event handlers to be called.
-	wg := &sync.WaitGroup{}
-	wg.Add(6)
+	handlerCalled, allHandlersCalled := eventCountdown(6)
 
-	// Each sync.Once is used to ensure that we call wg.Done once for each event
-	// handler and don't add multiple entries to wasCalled. The event handlers can
-	// be called more than once in some cases.
+	// Each sync.Once is used to ensure that we count each event handler once and
+	// don't add multiple entries to wasCalled. The event handlers can be called
+	// more than once in some cases.
 	onceOffererOnICEConnectionStateChange := &sync.Once{}
 	onceOffererOnConnectionStateChange := &sync.Once{}
 	onceOffererOnSignalingStateChange := &sync.Once{}
@@ -445,7 +474,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
 			wasCalled = append(wasCalled, "offerer OnICEConnectionStateChange")
-			wg.Done()
+			handlerCalled()
 		})
 	})
 	pcOffer.OnConnectionStateChange(func(PeerConnectionState) {
@@ -453,7 +482,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
 			wasCalled = append(wasCalled, "offerer OnConnectionStateChange")
-			wg.Done()
+			handlerCalled()
 		})
 	})
 	pcOffer.OnSignalingStateChange(func(SignalingState) {
@@ -461,7 +490,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
 			wasCalled = append(wasCalled, "offerer OnSignalingStateChange")
-			wg.Done()
+			handlerCalled()
 		})
 	})
 	pcAnswer.OnICEConnectionStateChange(func(ICEConnectionState) {
@@ -469,7 +498,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
 			wasCalled = append(wasCalled, "answerer OnICEConnectionStateChange")
-			wg.Done()
+			handlerCalled()
 		})
 	})
 	pcAnswer.OnConnectionStateChange(func(PeerConnectionState) {
@@ -477,7 +506,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
 			wasCalled = append(wasCalled, "answerer OnConnectionStateChange")
-			wg.Done()
+			handlerCalled()
 		})
 	})
 	pcAnswer.OnSignalingStateChange(func(SignalingState) {
@@ -485,7 +514,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
 			wasCalled = append(wasCalled, "answerer OnSignalingStateChange")
-			wg.Done()
+			handlerCalled()
 		})
 	})
 
@@ -494,17 +523,13 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 	assert.NoError(t, signalPair(pcOffer, pcAnswer))
 
 	// Wait for all of the event handlers to be triggered.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		done <- struct{}{}
-	}()
-	timeout := time.After(5 * time.Second)
 	select {
-	case <-done:
-		break
-	case <-timeout:
-		assert.Failf(t, "timed out waitingfor one or more events handlers to be called", "%+v *were* called", wasCalled)
+	case <-allHandlersCalled:
+	case <-time.After(5 * time.Second):
+		wasCalledMut.Lock()
+		called := append([]string(nil), wasCalled...)
+		wasCalledMut.Unlock()
+		assert.Failf(t, "timed out waiting for one or more event handlers to be called", "%+v *were* called", called)
 	}
 
 	closePairNow(t, pcOffer, pcAnswer)
@@ -720,9 +745,7 @@ func TestFlushOnSetLocalDescription(t *testing.T) {
 	var offerOnce sync.Once
 	var answerOnce sync.Once
 
-	pcOffer, err := NewPeerConnection(Configuration{
-		ICECandidatePoolSize: 1,
-	})
+	pcOffer, err := NewPeerConnection(Configuration{ICECandidatePoolSize: 1})
 	assert.NoError(t, err)
 
 	// We need to create a data channel in order to set mid
@@ -754,9 +777,7 @@ func TestFlushOnSetLocalDescription(t *testing.T) {
 	<-pcOfferFlushStarted
 
 	// Create Answer PeerConnection
-	pcAnswer, err := NewPeerConnection(Configuration{
-		ICECandidatePoolSize: 1,
-	})
+	pcAnswer, err := NewPeerConnection(Configuration{ICECandidatePoolSize: 1})
 	assert.NoError(t, err)
 
 	pcAnswer.OnICECandidate(func(i *ICECandidate) {
@@ -790,9 +811,7 @@ func TestSetICECandidatePoolSizeLarge(t *testing.T) {
 		t.Skip("Skipping ICECandidatePool test on WASM")
 	}
 
-	pc, err := NewPeerConnection(Configuration{
-		ICECandidatePoolSize: 2,
-	})
+	pc, err := NewPeerConnection(Configuration{ICECandidatePoolSize: 2})
 	assert.Nil(t, pc)
 	assert.Equal(t, &rtcerr.NotSupportedError{Err: errICECandidatePoolSizeTooLarge}, err)
 }
@@ -832,9 +851,7 @@ func TestAddTransceiver(t *testing.T) {
 		pc, err := NewPeerConnection(Configuration{})
 		assert.NoError(t, err)
 
-		transceiver, err := pc.AddTransceiverFromKind(RTPCodecTypeVideo, RTPTransceiverInit{
-			Direction: testCase.direction,
-		})
+		transceiver, err := pc.AddTransceiverFromKind(RTPCodecTypeVideo, RTPTransceiverInit{Direction: testCase.direction})
 		assert.NoError(t, err)
 
 		if testCase.expectReceiver {
@@ -864,7 +881,7 @@ func TestTransportChain(t *testing.T) {
 
 	peerConnectionsConnected := untilConnectionState(PeerConnectionStateConnected, offer, answer)
 	assert.NoError(t, signalPair(offer, answer))
-	peerConnectionsConnected.Wait()
+	<-peerConnectionsConnected
 
 	assert.NotNil(t, offer.SCTP().Transport().ICETransport())
 
@@ -905,7 +922,7 @@ func TestDTLSClose(t *testing.T) {
 
 	assert.NoError(t, pcOffer.SetRemoteDescription(*pcAnswer.LocalDescription()))
 
-	peerConnectionsConnected.Wait()
+	<-peerConnectionsConnected
 	assert.NoError(t, pcOffer.Close())
 }
 
